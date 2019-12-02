@@ -29,6 +29,7 @@
 #include "ns3/applications-module.h"
 #include "ns3/network-module.h"
 #include "ns3/packet-sink.h"
+#define PLOT
 
 using namespace ns3;
 

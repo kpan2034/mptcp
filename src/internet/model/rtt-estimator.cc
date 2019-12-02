@@ -191,6 +191,7 @@ Time RttEstimator::AckSeq (SequenceNumber32 ackSeq)
       if ((h.seq + SequenceNumber32 (h.count)) > ackSeq) break;               // Done removing
       m_history.pop_front (); // Remove
     }
+  NS_LOG_INFO("Adding to AckSeq");
   return m;
 }
 
@@ -217,6 +218,7 @@ void RttEstimator::ResetMultiplier ()
 
 void RttEstimator::Reset ()
 { 
+  NS_LOG_INFO("Reseting Rtt Estimator");
   NS_LOG_FUNCTION (this);
   // Reset to initial state
   m_next = 1;

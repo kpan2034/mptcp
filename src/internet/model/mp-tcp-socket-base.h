@@ -190,6 +190,15 @@ protected: // protected methods
   virtual void ReceivedData (uint8_t sFlowIdx, Ptr<Packet>, const TcpHeader&); // Recv of a data, put into buffer, call L7 to get it if necessary
   virtual void EstimateRtt (uint8_t sFlowIdx, const TcpHeader&);
   virtual void EstimateRtt (const TcpHeader&);
+
+  /* ---------- WLIA Stuff--------- */
+
+  virtual void EstimateBW (int acked, uint8_t sFlowId, const TcpHeader&, Time rtt);
+  int CountAck(uint8_t sFlowIdx, const TcpHeader&); 
+
+ /* ------------------------------- */
+
+
   virtual bool ReadOptions (uint8_t sFlowIdx, Ptr<Packet> pkt, const TcpHeader&); // Read option from incoming packets
   virtual bool ReadOptions (Ptr<Packet> pkt, const TcpHeader&); // Read option from incoming packets (Listening Socket only)
   virtual void DupAck(const TcpHeader& t, uint32_t count);  // Not in operation, it's pure virtual function from TcpSocketBase
@@ -218,6 +227,7 @@ protected: // protected methods
   uint32_t compute_a_scaled();
   double compute_alfa();
   void window_changed();
+
 
   // Helper functions -> main operations
   uint8_t LookupByAddrs(Ipv4Address src, Ipv4Address dst); // Called by Forwardup() to find the right subflow for incoing packet

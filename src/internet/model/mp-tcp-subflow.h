@@ -90,6 +90,24 @@ public:
   multiset<double> measuredRTT;
   Ptr<RttMeanDeviation> rtt;  // RTT calculator
   Time lastMeasuredRtt;       // Last measured RTT, used for plotting
+
+/* Stuff added for WLIA Support */
+
+  int m_accountedFor;
+  SequenceNumber32 m_prevAckNo;
+  double m_lastAck;
+  TracedValue<double> m_currentBW;
+  double m_lastBW;
+  double m_lastSampleBW;
+  Time m_baseRtt;                // Min RTT measured so far for duration of conntecion, used for WLIA
+  Time m_minRtt;                // Min RTT measured this window
+  TracedValue<uint32_t> win_size;
+  TracedValue<uint32_t> dwnd;
+  uint32_t vegasAlpha;
+  uint32_t vegasBeta;
+
+/* ---------------------------- */
+
   uint32_t TxSeqNumber;       // Subflow's next expected sequence number to send
   uint32_t RxSeqNumber;       // Subflow's next expected sequence number to receive
   uint64_t PktCount;          // number of sent packets

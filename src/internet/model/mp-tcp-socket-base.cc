@@ -39,7 +39,7 @@
 #include "ns3/drop-tail-queue.h"
 #include "ns3/object-vector.h"
 
-//#define PLOT
+#define PLOT
 #define RAND_GAP
 
 NS_LOG_COMPONENT_DEFINE("MpTcpSocketBase");
@@ -66,7 +66,8 @@ MpTcpSocketBase::GetTypeId(void)
                           COUPLED_EPSILON,  "COUPLED_EPSILON",
                           COUPLED_SCALABLE_TCP, "COUPLED_SCALABLE_TCP",
                           COUPLED_FULLY, "COUPLED_FULLY",
-                          UNCOUPLED, "UNCOUPLED"))
+                          UNCOUPLED, "UNCOUPLED",
+                          WLIA, "WLIA")) // enum defined in typedefs.h
 
       .AddAttribute("SchedulingAlgorithm",
                     "Algorithm for data distribution between sub-flows",
@@ -159,7 +160,8 @@ MpTcpSocketBase::MpTcpSocketBase():
   FastRecoveries = 0;
   flowCompletionTime = true;
   //TxBytes = 0;
-  flowType = "NULL";
+  //flowType = "NULL";
+  flowType = "Large";
   outputFileName = "NULL";
 
   alpha = 1; // alpha is 1 by default
@@ -243,12 +245,31 @@ MpTcpSocketBase::EstimateRtt(const TcpHeader& TcpHeader)
 }
 
 /** Called by ForwardUp() to estimate RTT */
+
 void
 MpTcpSocketBase::EstimateRtt(uint8_t sFlowIdx, const TcpHeader& mptcpHeader)
 {
   NS_LOG_FUNCTION(this << (int)sFlowIdx);
   Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
   sFlow->lastMeasuredRtt = sFlow->rtt->AckSeq(mptcpHeader.GetAckNumber());
+  NS_LOG_INFO("Estimating RTTMIN for subflow " << sFlowIdx << " -> " << sFlow->lastMeasuredRtt.GetSeconds());
+
+  // Update minRtt for that subflow
+  if (sFlow->m_baseRtt.GetSeconds() == 0) 
+    {
+      NS_LOG_INFO("Setting minRtt for the first time from -> " << sFlow->m_baseRtt.GetSeconds());
+     sFlow->m_baseRtt = sFlow->lastMeasuredRtt;
+    }
+  else
+    {
+      if ( sFlow->lastMeasuredRtt < sFlow->m_baseRtt && sFlow->lastMeasuredRtt > 0)
+        {
+      NS_LOG_INFO("Updating Rtt");
+            sFlow->m_baseRtt = sFlow->lastMeasuredRtt;
+        }
+    }
+  NS_LOG_INFO("MINRTT Set -> " << sFlow->m_baseRtt.GetSeconds());
+  
   //sFlow->measuredRTT.insert(sFlow->measuredRTT.end(), sFlow->rtt->GetCurrentEstimate().GetSeconds());
 
   // Plotting
@@ -552,7 +573,7 @@ MpTcpSocketBase::ProcessSynSent(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpH
         }NS_LOG_INFO("(" << sFlow->routeId << ") "<< TcpStateName[sFlow->state] << " -> ESTABLISHED");
       sFlow->state = ESTABLISHED;
       sFlow->retxEvent.Cancel();
-      if ((m_largePlotting && (flowType.compare("Large") == 0)) || (m_shortPlotting && (flowType.compare("Short") == 0)))
+      //if ((m_largePlotting && (flowType.compare("Large") == 0)) || (m_shortPlotting && (flowType.compare("Short") == 0)))
         sFlow->StartTracing("cWindow");
       sFlow->rtt->Init(mptcpHeader.GetAckNumber());
       sFlow->initialSequnceNumber = (mptcpHeader.GetAckNumber().GetValue());
@@ -986,6 +1007,10 @@ MpTcpSocketBase::ReceivedAck(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHead
                 {
                   //NS_LOG_ERROR(Simulator::Now().GetSeconds()<< " [" << m_node->GetId()<< "] Duplicated ack received for SeqgNb: " << ack << " DUPACKs: " << sFlow->m_dupAckCount + 1);
                   DupAck(sFlowIdx, ptrDSN);
+                  if(AlgoCC == WLIA){
+                    int acked = CountAck(sFlowIdx, mptcpHeader); 
+                    EstimateBW(acked, sFlowIdx, mptcpHeader, Time(0));
+                  }
                   break;
                 }
               // otherwise, the ACK is precisely equal to the nextTxSequence
@@ -1000,6 +1025,11 @@ MpTcpSocketBase::ReceivedAck(uint8_t sFlowIdx, Ptr<Packet> packet, const TcpHead
       NS_LOG_WARN ("New ack of " << mptcpHeader.GetAckNumber ());
       NewAckNewReno(sFlowIdx, mptcpHeader, 0);
       sFlow->m_dupAckCount = 0;
+      // For WLIA Case only:
+      if(AlgoCC == WLIA){
+        int acked = CountAck(sFlowIdx, mptcpHeader); 
+        EstimateBW(acked, sFlowIdx, mptcpHeader, Time(0));
+      }
     }
   // If there is any data piggy-backed, store it into m_rxBuffer
   if (packet->GetSize() > 0)
@@ -1846,10 +1876,16 @@ MpTcpSocketBase::ReTxTimeout(uint8_t sFlowIdx)
 void
 MpTcpSocketBase::ReduceCWND(uint8_t sFlowIdx, DSNMapping* ptrDSN)
 {
+    // This is what is executed when three dup acks are received
+    // WestWood reduction part should come here
   Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
   uint32_t mss = sFlow->MSS;
   int d = 0;
+  double tmp = 0.0;
+  uint32_t queue_use = 0;
   calculateTotalCWND();
+  NS_LOG_INFO("Sflow -> " << sFlowIdx);
+  NS_LOG_INFO("CWND_OLD ->" << sFlow->cwnd);
 
   switch (AlgoCC)
     {
@@ -1859,6 +1895,8 @@ MpTcpSocketBase::ReduceCWND(uint8_t sFlowIdx, DSNMapping* ptrDSN)
   case COUPLED_INC:
   case COUPLED_EPSILON:
   case UNCOUPLED:
+      NS_LOG_INFO("SFlowidx -> " << sFlowIdx);
+      NS_LOG_INFO("REDUCDE TO : " << BytesInFlight(sFlowIdx) / 2);
     sFlow->ssthresh = std::max(2 * mss, BytesInFlight(sFlowIdx) / 2);
     sFlow->cwnd = sFlow->ssthresh + 3 * mss;
     break;
@@ -1886,16 +1924,35 @@ MpTcpSocketBase::ReduceCWND(uint8_t sFlowIdx, DSNMapping* ptrDSN)
     sFlow->ssthresh = std::max(2 * mss, (uint32_t) d);
     sFlow->cwnd = sFlow->ssthresh + 3 * mss;
     break;
-
+   case WLIA:
+    tmp = std::max(2 * mss, BytesInFlight(sFlowIdx) / 2);
+    sFlow->ssthresh = std::max(tmp, sFlow->m_currentBW.Get() * static_cast<double>(sFlow->m_baseRtt.GetSeconds()));
+    NS_LOG_INFO("cwnd was -> " << sFlow->cwnd);
+    NS_LOG_INFO("sst -> " << sFlow->ssthresh << "; BW -> " << sFlow->m_currentBW.Get() << "; minRtt -> " << static_cast<double>(sFlow->m_baseRtt.GetSeconds()) << " RETRANSMIT");
+    queue_use = sFlow->cwnd * (1 - static_cast<double>(sFlow->m_minRtt.GetSeconds()) / sFlow->m_baseRtt.GetSeconds());
+    if(queue_use < sFlow->vegasAlpha){
+        sFlow->dwnd += 1;
+    }
+    else if(queue_use >= sFlow->vegasBeta){
+        sFlow->dwnd -= 1;
+    }
+    if(sFlow->cwnd < sFlow->ssthresh)
+     {
+        sFlow->cwnd = sFlow->ssthresh + 3 * mss;
+     }
+    break;
   default:
     NS_ASSERT(3!=3);
     break;
     }
   // update
+  NS_LOG_INFO("CWND_NEW ->" << sFlow->cwnd);
   sFlow->m_recover = SequenceNumber32(sFlow->maxSeqNb + 1);
   sFlow->m_inFastRec = true;
 
   // Retrasnmit a specific packet (lost segment)
+  //NS_LOG_INFO("("<<(int) sFlowIdx << ") About to DoRetransmit -> ");
+  // This is where retransmit is occuring and setting my cwnd to zero
   DoRetransmit(sFlowIdx, ptrDSN);
 #ifdef PLOT
   reTxTrack.push_back(make_pair(Simulator::Now().GetSeconds(), sFlow->cwnd));
@@ -1909,19 +1966,30 @@ MpTcpSocketBase::Retransmit(uint8_t sFlowIdx)
 {
   NS_LOG_FUNCTION (this);  //
   Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
+  
   // Exit From Fast Recovery
   sFlow->m_inFastRec = false;
   // According to RFC2581 sec.3.1, upon RTO, ssthresh is set to half of flight
   // size and cwnd is set to 1*MSS, then the lost packet is retransmitted and
   // TCP back to slow start
+  if(AlgoCC == WLIA){
+    //double tmp = std::max(2*sFlow->MSS, BytesInFlight(sFlowIdx) / 2);
+    //sFlow->ssthresh = std::max(tmp, sFlow->m_currentBW.Get() * static_cast<double> (sFlow->m_baseRtt.GetSeconds()));
+    sFlow->ssthresh = std::max(static_cast<double>(2*sFlow->MSS), sFlow->m_currentBW.Get() * static_cast<double> (sFlow->m_baseRtt.GetSeconds()));
+    sFlow->cwnd = sFlow->ssthresh;
+  }
+  else
+    {
   sFlow->ssthresh = std::max(2 * sFlow->MSS, BytesInFlight(sFlowIdx) / 2);
+  //sFlow->cwnd = sFlow->MSS; //  sFlow->cwnd = 1.0;
+    }
   sFlow->cwnd = sFlow->MSS; //  sFlow->cwnd = 1.0;
   sFlow->TxSeqNumber = sFlow->highestAck + 1; // m_nextTxSequence = m_txBuffer.HeadSequence(); // Restart from highest Ack
   // TODO TEMP
   //if (!(sendingBuffer->Empty() && sFlow->mapDSN.size() > 0))
   sFlow->rtt->IncreaseMultiplier();  // Double the next RTO
 
-  if (AlgoCC >= COUPLED_EPSILON)
+  if (AlgoCC >= COUPLED_EPSILON && AlgoCC < WLIA)
       window_changed();
 
   DoRetransmit(sFlowIdx);  // Retransmit the packet
@@ -2012,7 +2080,11 @@ MpTcpSocketBase::NewAckNewReno(uint8_t sFlowIdx, const TcpHeader& mptcpHeader, T
   else if (sFlow->m_inFastRec && ack >= sFlow->m_recover)
     { // Full ACK (RFC2582 sec.3 bullet #5 paragraph 2, option 1)
       //NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " [" << m_node->GetId() <<"] (" << (int)sFlowIdx << ") NewAckNewReno -> FullAck");
+        NS_LOG_INFO("SubFlow -> " << sFlowIdx);
+        NS_LOG_INFO("FAST RECOV CWND_OLD -> " << sFlow->cwnd);
+        NS_LOG_INFO("ANS -> " << sFlow->ssthresh );
       sFlow->cwnd = std::min(sFlow->ssthresh, BytesInFlight(sFlowIdx) + sFlow->MSS);
+        NS_LOG_INFO("FAST RECOV CWND_NEW-> " << sFlow->cwnd);
 
       // Exit from Fast recovery
       sFlow->m_inFastRec = false;
@@ -2249,6 +2321,7 @@ MpTcpSocketBase::ForwardUp(Ptr<Packet> p, Ipv4Header header, uint16_t port, Ptr<
 void
 MpTcpSocketBase::DoForwardUp(Ptr<Packet> p, Ipv4Header header, uint16_t port, Ptr<Ipv4Interface> interface)
 {
+  NS_LOG_INFO("FORWARD UP CALLED");
   if (m_endPoint == 0)
     {
       NS_LOG_UNCOND("No endpoint exist");
@@ -2412,6 +2485,7 @@ MpTcpSocketBase::InitiateSubflows()
         sFlow->m_endPoint = m_tcp->Allocate(sFlow->sAddr, sFlow->sPort, sFlow->dAddr, sFlow->dPort); // Insert New Subflow to the list
         if (sFlow->m_endPoint == 0)
           return -1;
+        NS_LOG_INFO("SETTING RX CALLBACK");
         sFlow->m_endPoint->SetRxCallback(MakeCallback(&MpTcpSocketBase::ForwardUp, Ptr<MpTcpSocketBase>(this)));
         subflows.insert(subflows.end(), sFlow);
 
@@ -2726,6 +2800,7 @@ MpTcpSocketBase::DupAck(uint8_t sFlowIdx, DSNMapping* ptrDSN)
   COUPLED_EPSILON,        // 6
   COUPLED_INC,            // 7
   COUPLED_FULLY           // 8
+  WLIA                    // 9
  */
 std::string
 MpTcpSocketBase::PrintCC(uint32_t cc)
@@ -2759,6 +2834,9 @@ MpTcpSocketBase::PrintCC(uint32_t cc)
   case 8:
     return "CF";             //8
     break;
+  case 9:
+    return "WLIA";           //9
+    break;
   default:
     exit(200);
     return "Unknown";
@@ -2773,10 +2851,17 @@ MpTcpSocketBase::GeneratePlotDetail(void)
 {
 
   stringstream oss;
-  oss << "Node["<<m_node->GetId() << "]  FlowId[" << flowId << "]  FlowType[" << flowType << "]  CC[" << PrintCC(AlgoCC) <<"] RandomGap[" << m_rGap << "]";
+  oss << "[CC:" << PrintCC(AlgoCC) << "]\\n";
+  //oss << "[Rate0:XX Mbps] [ErrorRate0:XX%] [Delay0:XXms] \\n [Rate1:XX Mbps] [ErrorRate1:XX%] [Delay1:XXms]";
+  oss << "[Channel0:XX Mbps] [Channel1:XX Mbps] [UDP Rate:XX Mbps] [UDP StartTime: XXs]";
   string tmp = oss.str();
   oss.str("");
   return tmp;
+  //stringstream oss;
+  //oss << "Node["<<m_node->GetId() << "]  FlowId[" << flowId << "]  FlowType[" << flowType << "]  CC[" << PrintCC(AlgoCC) <<"] RandomGap[" << m_rGap << "]";
+  //string tmp = oss.str();
+  //oss.str("");
+  //return tmp;
   //stringstream detail;
   //detail << "CC:" << PrintCC(AlgoCC) << "  sF:" << subflows.size() << " C:" << LinkCapacity / 1000 << "Kbps  RTT:" << RTT
   //    << "Ms  D:" << totalBytes / 1000 << "Kb  dtQ(" << lostRate << ")  MSS:" << segmentSize << "B";
@@ -2796,7 +2881,7 @@ MpTcpSocketBase::GenerateCwndTracer()
                               "set grid\n"
                               "set lmargin 10.0\n"
                               "set rmargin 5.0\n"
-                              "set key bmargin center horizontal Left reverse noenhanced autotitles columnhead nobox\n");
+                              "set key top vertical right noenhanced autotitles columnhead box\n");
   cwndTracerGraph.SetTitle("Congestion Window vs Time \\n\\n" + GeneratePlotDetail());
   // cwnd
   for (uint16_t idx = 0; idx < subflows.size(); idx++)
@@ -2845,6 +2930,7 @@ MpTcpSocketBase::GenerateCwndTracer()
         }
       if (sFlow->sstTracer.size() > 0)
         sstGraph.AddDataset(dataSet);
+        //cwndTracerGraph.AddDataset(dataSet);
     }
   gnu.AddPlot(cwndTracerGraph);
   gnu.AddPlot(sstGraph);
@@ -3218,7 +3304,7 @@ MpTcpSocketBase::Close(uint8_t sFlowIdx)
               cout <<"[" << m_node->GetId() << "]{" << flowId<<"}("<< flowType<< ") -> DoGenerateOutPutFile()"<< endl;
               flowCompletionTime = false;
 //              DoGenerateOutPutFile();
-//              GeneratePlots();
+              GeneratePlots();
             }
           NS_LOG_INFO ("Socket " << this << " deferring close, Connection state " << TcpStateName[m_state] << " PendingData: " << sendingBuffer.PendingData());
         }
@@ -3350,9 +3436,9 @@ MpTcpSocketBase::CloseMultipathConnection()
       if (m_state == ESTABLISHED && client) // We could remove client ... it should work but it generate plots for receiver as well.
         {
           NS_LOG_INFO("CloseMultipathConnection -> GENERATE PLOTS SUCCESSFULLY -> HoOoOrA  pAck: " << pAck);
-//          GenerateCWNDPlot();
-//          GenerateSendvsACK();
-//          GeneratePlots();
+          //GenerateCWNDPlot();
+          //GenerateSendvsACK();
+          GeneratePlots();
         }
       if (m_state != CLOSED)
         {
@@ -3750,7 +3836,7 @@ MpTcpSocketBase::OpenCWND(uint8_t sFlowIdx, uint32_t ackedBytes)
   int tmp, total_cwnd, tmp2;
   double tmp_float;
 
-  if (AlgoCC >= COUPLED_SCALABLE_TCP)
+  if (AlgoCC >= COUPLED_SCALABLE_TCP && AlgoCC < WLIA)
     {
       if (ackedBytes > mss)
         ackedBytes = mss;
@@ -3782,8 +3868,32 @@ MpTcpSocketBase::OpenCWND(uint8_t sFlowIdx, uint32_t ackedBytes)
     }
   else
     {
+        uint32_t queue_use = 0;
       switch (AlgoCC)
         {
+      case WLIA:
+        calculateAlpha();
+        adder = alpha * sFlow->MSS * sFlow->MSS / totalCwnd;
+        adder = std::max(1.0, adder);
+        sFlow->cwnd += static_cast<double>(adder);
+        queue_use = sFlow->cwnd * (1 - static_cast<double>(sFlow->m_minRtt.GetSeconds()) / sFlow->m_baseRtt.GetSeconds());
+        if(queue_use < sFlow->vegasAlpha){
+            sFlow->dwnd += 1;
+        }
+        else if(queue_use > sFlow->vegasBeta){
+            sFlow->dwnd -= 1;
+        }
+        if(sFlow->cwnd < sFlow->ssthresh)
+        {
+            sFlow->cwnd = sFlow->ssthresh;
+        }
+#ifdef PLOT
+        sFlow->ssthreshtrack.push_back(make_pair(Simulator::Now().GetSeconds(), sFlow->ssthresh));
+        sFlow->CWNDtrack.push_back(make_pair(Simulator::Now().GetSeconds(), sFlow->cwnd));
+        totalCWNDtrack.push_back(make_pair(Simulator::Now().GetSeconds(), totalCwnd));
+#endif
+        NS_LOG_ERROR ("Subflow "<<(int)sFlowIdx<<" Congestion Control (WLIA): alpha "<<alpha<<" increment is "<<adder<<" ssthresh "<< ssthresh << " cwnd "<<cwnd );
+        break;
       case RTT_Compensator:
         calculateAlpha(); // Calculate alpha per drop or RTT...RFC 6356 (Section 4.1)
         adder = std::min(alpha * sFlow->MSS * sFlow->MSS / totalCwnd, static_cast<double>(sFlow->MSS * sFlow->MSS) / cwnd);
@@ -4076,7 +4186,8 @@ MpTcpSocketBase::GeneratePlotsOutput()
 {
   stringstream oss;
   //oss << "PLOT_" << m_node->GetId() << "_" << flowId << "_" << GetTypeIdName() <<"_"<< PrintCC(AlgoCC) <<"_"<< (int)maxSubflows << "_" << (uint32_t)Simulator::Now().GetSeconds();
-  oss << "PLOT_" << PrintCC(AlgoCC) << "_" << (uint32_t)Simulator::Now().GetSeconds() <<"_"<< (int)maxSubflows << "_" << GetTypeIdName() <<"_" << m_node->GetId() << "_" << flowId <<"_" << m_rGap;
+  //oss << "PLOT_" << PrintCC(AlgoCC) << "_" << (uint32_t)Simulator::Now().GetSeconds() <<"_"<< (int)maxSubflows << "_" << GetTypeIdName() <<"_" << m_node->GetId() << "_" << flowId <<"_" << m_rGap;
+  oss << "PLOT_" << m_node->GetId();
   string tmp = oss.str();
   oss.clear();
 //  std::ofstream outfile(oss.str().c_str());
@@ -4158,13 +4269,13 @@ MpTcpSocketBase::GetTypeIdName()
 void
 MpTcpSocketBase::GeneratePlots()
 {
-  if ((m_largePlotting && (flowType.compare("Large") == 0)) || (m_shortPlotting && (flowType.compare("Short") == 0)))
-    {
+  //if ((m_largePlotting && (flowType.compare("Large") == 0)) || (m_shortPlotting && (flowType.compare("Short") == 0)))
+    //{
       GenerateCwndTracer();
       GenerateRTT();
       GeneratePktCount();
       GeneratePlotsOutput();
-    }
+    //}
 }
 
 
@@ -4207,5 +4318,66 @@ MpTcpSocketBase::GetEstSubflows()
     }
   return c;
 }
+
+
+
+
+
+/*-------------------------Stuff Added for WLIA support ----------------*/
+
+
+void
+MpTcpSocketBase::EstimateBW(int acked, uint8_t sFlowIdx, const TcpHeader& tcpHeader, Time rtt)
+{
+  NS_LOG_FUNCTION (this << (int)sFlowIdx);
+  Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
+
+  double currentAck = static_cast<double> (Simulator::Now().GetSeconds());
+  double currBW = acked * sFlow->MSS / (currentAck - sFlow->m_lastAck);
+  sFlow->m_lastAck = currentAck;
+  double sample_bwe = currBW;
+  double alpha = 0.9;
+  currBW = (alpha * sFlow->m_lastBW) + ((1 - alpha) * ((sample_bwe + sFlow->m_lastSampleBW) / 2));
+  sFlow->m_lastSampleBW = sample_bwe;
+  sFlow->m_lastBW = currBW;
+  sFlow->m_currentBW = currBW;
+  NS_LOG_INFO("SFLOW ->" << sFlowIdx);
+  NS_LOG_INFO("m_currentBW -> " << sFlow->m_currentBW << "; m_lastAck -> " << currentAck);
+
+}
+
+int MpTcpSocketBase::CountAck(uint8_t sFlowIdx, const TcpHeader& mptcpHeader)
+{
+    NS_LOG_FUNCTION ( this ) ;
+    Ptr<MpTcpSubFlow> sFlow = subflows[sFlowIdx];
+    uint32_t mss = sFlow->MSS;
+
+    int cumul_ack = (mptcpHeader.GetAckNumber() - sFlow->m_prevAckNo) / mss;
+
+    if(cumul_ack == 0)
+    {
+        sFlow->m_accountedFor++;
+        cumul_ack = 1;
+    }
+    if(cumul_ack > 1)
+    {
+        if ( sFlow->m_accountedFor >= cumul_ack)
+        {
+            sFlow->m_accountedFor -= cumul_ack;
+            cumul_ack = 1;
+        }
+        else if(sFlow->m_accountedFor < cumul_ack)
+        {
+            cumul_ack -= sFlow->m_accountedFor;
+            sFlow->m_accountedFor =0;
+        }
+    }
+
+    sFlow->m_prevAckNo = mptcpHeader.GetAckNumber();
+    NS_LOG_INFO("prevAckNo -> " << sFlow->m_prevAckNo << "; cumul_ack -> " << cumul_ack);
+    return cumul_ack;
+}
+
+
 
 }//namespace ns3

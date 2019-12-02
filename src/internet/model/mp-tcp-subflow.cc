@@ -74,6 +74,21 @@ MpTcpSubFlow::MpTcpSubFlow() :
   m_inFastRec = false;
   m_limitedTx = false;
   m_dupAckCount = 0;
+  /* WLIA */
+  m_accountedFor = 0;
+  m_prevAckNo = 0;
+  m_lastAck = 0.0;
+  m_currentBW = 0.0;
+  m_lastBW = 0.0;
+  m_lastSampleBW = 0.0;
+  m_baseRtt = Seconds(0.0);
+  m_minRtt = Seconds(0.0);
+  win_size = 0;
+  dwnd = 0;
+
+  vegasAlpha = 2;
+  vegasBeta = 4;
+
   PktCount = 0;
   m_recover = SequenceNumber32(0);
   m_gotFin = false;
